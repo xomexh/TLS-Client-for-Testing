@@ -1,25 +1,46 @@
-use std::io::{stdout, Read, Write};
-use std::net::TcpStream;
-use std::sync::Arc;
+#![allow(unused_imports)]
+#![allow(unused_variables)]
 
-use rustls::RootCertStore;
+use std::{
+    env::args,
+    io::{self, Write},
+    net::TcpStream,
+    sync::Arc,
+};
 
-fn main() {
-    let root_store = RootCertStore {
-        roots: webpki_roots::TLS_SERVER_ROOTS.into(),
-    };
-    let mut config = rustls::ClientConfig::builder()
-        .with_root_certificates(root_store)
+use rustls::{
+    client::DangerousClientConfig, server::AllowAnyAnonymousOrAuthenticatedClient,
+    OwnedTrustAnchor, RootCertStore, ServerName,
+};
+use tracing::info;
+
+fn main() -> io::Result<()> {
+    let _ = env_logger::builder()
+        .filter_level(log::LevelFilter::Trace)
+        .try_init();
+
+    // let server = args().nth(1).expect("No Server given");
+    // let port = args().nth(2).expect("No Port given");
+    // let sock_addr = format!("{}:{}", server, port);
+    let server = "127.0.0.1";
+    let port = "3000";
+    let sock_addr = "127.0.0.1:3000";
+    dbg!(&sock_addr);
+
+
+    let config = rustls::ClientConfig::builder()
+        .with_safe_defaults()
+        .with_custom_certificate_verifier(Arc::new(danger::NoCertificateVerification {}))
         .with_no_client_auth();
+    // .dangerous()
+    // .set_certificate_verifier(Arc::new(danger::NoCertificateVerification{}));
 
-    // Allow using SSLKEYLOGFILE.
-    config.key_log = Arc::new(rustls::KeyLogFile::new());
-
-    let server_name = "127.0.0.1:3000".try_into().unwrap();
+    //TLS handshake here:
+    let server_name: ServerName = ServerName::try_from(server.as_ref()).unwrap();
     let mut conn = rustls::ClientConnection::new(Arc::new(config), server_name).unwrap();
-    let mut sock = TcpStream::connect("127.0.0.1:443").unwrap();
+    let mut sock = TcpStream::connect(sock_addr).unwrap();
     let mut tls = rustls::Stream::new(&mut conn, &mut sock);
-    tls.write_all(
+    match tls.write_all(
         concat!(
             "GET / HTTP/1.1\r\n",
             "Host: 127.0.0.1\r\n",
@@ -28,19 +49,37 @@ fn main() {
             "\r\n"
         )
         .as_bytes(),
-    )
-    .unwrap();
-    let ciphersuite = tls
-        .conn
-        .negotiated_cipher_suite()
-        .unwrap();
-    writeln!(
-        &mut std::io::stderr(),
-        "Current ciphersuite: {:?}",
-        ciphersuite.suite()
-    )
-    .unwrap();
-    let mut plaintext = Vec::new();
-    tls.read_to_end(&mut plaintext).unwrap();
-    stdout().write_all(&plaintext).unwrap();
+    ) {
+        Ok(_) => {println!("\n\n WROTE REQUEST on Server\n");}
+        Err(e) => {println!("failed to write request: {}", e);}
+    }
+
+    info!("retrieving peer certificates...");
+    match conn.peer_certificates() {
+        Some(peer_certs) => { println!("\n PEER CERTS:\n {:#?}\n", peer_certs);}
+        None => {println!("no peer certs");}
+    }
+    Ok(())
+}
+
+
+//Set Dangerous Configuration
+mod danger {
+    use std::time::SystemTime;
+    use rustls::{client::ServerCertVerified, Certificate, Error, ServerName};
+    pub struct NoCertificateVerification {}
+
+    impl rustls::client::ServerCertVerifier for NoCertificateVerification {
+        fn verify_server_cert(
+            &self,
+            end_entity: &Certificate,
+            intermediates: &[Certificate],
+            server_name: &ServerName,
+            scts: &mut dyn Iterator<Item = &[u8]>,
+            ocsp_response: &[u8],
+            now: SystemTime,
+        ) -> Result<ServerCertVerified, Error> {
+            Ok(rustls::client::ServerCertVerified::assertion())
+        }
+    }
 }
